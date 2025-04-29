@@ -113,6 +113,10 @@ in
             "GIVC_LOG" = "givc=debug,info";
           };
       };
-    networking.firewall.allowedTCPPorts = unique (map (addr: strings.toInt addr.port) tcpAddresses);
+
+    # Allow local port 9000 for Alloy-to-GIVC communication
+    networking.firewall.allowedTCPPorts = unique (
+      (map (addr: strings.toInt addr.port) tcpAddresses) ++ [ 9000 ]
+    );
   };
 }

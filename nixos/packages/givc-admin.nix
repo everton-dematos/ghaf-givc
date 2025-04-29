@@ -22,11 +22,22 @@ let
 
     strictDeps = true;
 
-    nativeBuildInputs = [ protobuf ];
-    buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
-      # Additional darwin specific inputs can be set here
-      pkgs.libiconv
+    nativeBuildInputs = [
+      protobuf
+      pkgs.pkg-config
     ];
+
+    buildInputs =
+      pkgs.lib.optionals pkgs.stdenv.isDarwin [
+        # Additional darwin specific inputs can be set here
+        pkgs.libiconv
+      ]
+      ++ [
+        pkgs.systemd.dev
+      ];
+
+    # Needed for pkg-config to find libsystemd
+    PKG_CONFIG_PATH = "${pkgs.systemd.dev}/lib/pkgconfig";
   };
 
   givc = craneLib.buildPackage (
@@ -54,6 +65,10 @@ let
         mv $out/bin/givc-agent $agent/bin/givc-agent
         mv $out/bin/update-server $update_server/bin/ota-update-server
         mv $out/bin/ota-update $ota/bin/ota-update
+
+        # Install Sigma rules directory
+        mkdir -p $out/share/givc
+        cp -r crates/admin/src/admin/sigma_all_rules $out/share/givc/
       '';
     }
   );

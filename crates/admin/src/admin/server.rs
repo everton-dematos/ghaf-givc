@@ -17,6 +17,18 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
+use axum::body::Bytes;
+use axum::response::IntoResponse;
+use axum::{Router, http::StatusCode, routing::post};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use prost::Message;
+use prost_types::Timestamp;
+use serde_json::json;
+use sigmars::{SigmaCollection, event::Event as SigmaEvent, event::LogSource};
+use snap::raw::Decoder;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+
 pub use pb::admin_service_server::AdminServiceServer;
 
 use crate::admin::registry::Registry;
@@ -54,6 +66,30 @@ pub struct AdminService {
     inner: Arc<AdminServiceImpl>,
 }
 
+//rustreceiver
+#[derive(prost::Message)]
+pub struct PushRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub streams: Vec<LogStream>,
+}
+
+#[derive(prost::Message)]
+pub struct LogStream {
+    #[prost(string, tag = "1")]
+    pub labels: String,
+    #[prost(message, repeated, tag = "2")]
+    pub entries: Vec<LogEntry>,
+}
+
+#[derive(prost::Message)]
+pub struct LogEntry {
+    #[prost(bytes, tag = "1")]
+    pub timestamp: Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub line: String,
+}
+//rustreceiver
+
 struct Validator();
 
 impl Validator {
@@ -77,6 +113,10 @@ impl AdminService {
         let clone = inner.clone();
         tokio::task::spawn(async move {
             clone.monitor().await;
+        });
+        let clone_hello = inner.clone();
+        tokio::task::spawn(async move {
+            clone_hello.log_monitor().await;
         });
         Self { inner }
     }
@@ -336,6 +376,131 @@ impl AdminServiceImpl {
             }
             info!("{:#?}", self.registry);
         }
+    }
+
+    pub async fn log_monitor(self: Arc<Self>) {
+        async fn handle_logs(body: Bytes, sigma_rules: Arc<SigmaCollection>) -> impl IntoResponse {
+            info!("Received log POST: {} bytes", body.len());
+
+            let mut decoder = Decoder::new();
+
+            match decoder.decompress_vec(&body) {
+                Ok(decompressed) => match PushRequest::decode(&*decompressed) {
+                    Ok(decoded) => {
+                        for stream in decoded.streams {
+                            let labels_map = AdminServiceImpl::parse_labels(&stream.labels);
+
+                            // Extract source VM from labels
+                            let source_vm = labels_map
+                                .get("__journal__hostname")
+                                .or_else(|| labels_map.get("nodename"))
+                                .map(|s| s.as_str())
+                                .unwrap_or("unknown");
+
+                            for entry in stream.entries {
+                                let ts = match Timestamp::decode(&*entry.timestamp) {
+                                    Ok(t) => {
+                                        let naive = NaiveDateTime::from_timestamp_opt(
+                                            t.seconds,
+                                            t.nanos as u32,
+                                        );
+                                        if let Some(ndt) = naive {
+                                            let datetime: DateTime<Utc> =
+                                                DateTime::from_utc(ndt, Utc);
+                                            datetime.format("%b %d %H:%M:%S").to_string()
+                                        } else {
+                                            "<invalid timestamp>".to_string()
+                                        }
+                                    }
+                                    Err(_) => "<invalid timestamp>".to_string(),
+                                };
+
+                                let line = entry.line.replace('\n', "␤").replace('\r', "␍");
+                                // info!("[{} | source: {}] {}", ts, source_vm, line);
+
+                                let json_log = json!({
+                                    "timestamp": Utc::now().to_rfc3339(),
+                                    "host": { "name": source_vm },
+                                    "log": { "message": line }
+                                });
+
+                                info!("{}", json_log.to_string());
+
+                                let mut event: SigmaEvent = json_log.into();
+                                event.logsource = LogSource::default().product("linux");
+
+                                // Match against all rules without filtering by logsource
+                                let matches = sigma_rules.get_detection_matches_unfiltered(&event);
+                                for id in matches {
+                                    info!("MATCHED RULE: {}", id);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to decode protobuf payload: {}", e);
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to decompress snappy body: {}", e);
+                }
+            }
+
+            StatusCode::OK
+        }
+
+        fn load_sigma_rules() -> anyhow::Result<SigmaCollection> {
+            let rule_dir = std::env::var("SIGMA_RULE_PATH")
+                .unwrap_or_else(|_| "/usr/share/givc/sigma_all_rules".to_string());
+
+            let collection = SigmaCollection::new_from_dir(&rule_dir)
+                .map_err(|e| anyhow::anyhow!("Failed to load rules: {}", e))?;
+
+            println!("Loaded {} Sigma rules", collection.len());
+            Ok(collection)
+        }
+
+        let sigma_rules = match load_sigma_rules() {
+            Ok(rules) => Arc::new(rules),
+            Err(e) => {
+                error!("Failed to load Sigma rules: {:?}", e);
+                return;
+            }
+        };
+
+        // let app = Router::new().route("/logs", post(handle_logs));
+        let app = Router::new().route(
+            "/logs",
+            post({
+                let sigma_rules = sigma_rules.clone();
+                move |body| handle_logs(body, sigma_rules.clone())
+            }),
+        );
+        let addr = SocketAddr::from(([127, 0, 0, 1], 8484));
+
+        info!("Log monitor started at http://{}", addr);
+
+        if let Err(e) = axum::Server::bind(&addr)
+            .serve(app.into_make_service())
+            .await
+        {
+            error!("Log monitor server failed: {}", e);
+        }
+    }
+
+    fn parse_labels(labels: &str) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+
+        let trimmed = labels.trim_matches(|c| c == '{' || c == '}');
+        for pair in trimmed.split(',') {
+            if let Some((k, v)) = pair.split_once('=') {
+                let key = k.trim().to_string();
+                let val = v.trim().trim_matches('"').to_string();
+                map.insert(key, val);
+            }
+        }
+
+        map
     }
 
     // Refactoring kludge
