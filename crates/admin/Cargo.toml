@@ -17,13 +17,15 @@ regex = "1.11"
 serde_json = "1.0.120"
 serde = { version = "1.0.202", features = ["derive"] }
 strum = { version = "0.27", features = ["derive"] }
-tokio-stream = "0.1"
 tokio = { version = "1.44", features = [
   "rt-multi-thread",
   "time",
   "macros",
   "fs",
+  "process",
+  "io-util",
 ] }
+tokio-stream = "0.1"
 tokio-vsock = "0.7"
 tonic-reflection = "0.13"
 tonic-types = "0.13"
@@ -37,7 +39,9 @@ tracing-subscriber = { version = "0.3", features = [
   "time",
   "local-time",
 ] }
+url = "2"
 x509-parser = "0.17"
+futures-util = "0.3"
 
 # GIVC subparts
 givc-common = { path = "../common" }

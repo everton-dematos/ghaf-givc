@@ -11,6 +11,11 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
+use tokio::time::{interval, MissedTickBehavior};
+use tokio_stream::{wrappers::IntervalStream, StreamExt};
+
 pub use pb::admin_service_server::AdminServiceServer;
 
 use crate::admin::registry::*;
@@ -70,6 +75,10 @@ impl AdminService {
         let clone = inner.clone();
         tokio::task::spawn(async move {
             clone.monitor().await;
+        });
+        let clone_hello = inner.clone();
+        tokio::task::spawn(async move {
+            clone_hello.log_monitor().await;
         });
         Self { inner }
     }
@@ -304,6 +313,86 @@ impl AdminServiceImpl {
             }
             info!("{:#?}", self.registry)
         }
+    }
+
+    pub async fn log_monitor(&self) {
+        info!("Starting local log monitoring...");
+
+        loop {
+            let mut cmd = match Command::new("journalctl")
+                .args(["-f", "-o", "short"])
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Failed to spawn journalctl: {}", e);
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue; // Retry after delay
+                }
+            };
+
+            let ticker = IntervalStream::new({
+                let mut interval = interval(Duration::from_secs(5));
+                interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                interval
+            });
+
+            tokio::pin!(ticker);
+
+            if let Some(stdout) = cmd.stdout.take() {
+                let reader = BufReader::new(stdout);
+                let mut lines = reader.lines();
+
+                loop {
+                    tokio::select! {
+                        Some(_) = ticker.next() => {
+                            debug!("Log monitor heartbeat...");
+                        }
+                        result = lines.next_line() => {
+                            match result {
+                                Ok(Some(line)) => {
+                                    // === Log Filtering Section ===
+                                    // Add or modify filtering logic.
+                                    if Self::should_log_be_processed(&line) {
+                                        info!("Received relevant log: {}", line);
+                                    }
+                                    // =============================
+                                }
+                                Ok(None) => {
+                                    error!("Journalctl stream closed. Restarting...");
+                                    break; // Restart journalctl
+                                }
+                                Err(e) => {
+                                    error!("Error reading journalctl output: {}. Restarting...", e);
+                                    break; // Restart journalctl
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                error!("Failed to capture stdout of journalctl process.");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+
+            // Safety delay before restart to avoid tight crash loops
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    /// Function to determine if a log line should be processed or ignored.
+    pub(crate) fn should_log_be_processed(line: &str) -> bool {
+        // === Filtering Rules ===
+
+        // Ignore system noise
+        let ignored_keywords = [
+            "givc-admin", // Avoid self-generated logs
+        ];
+
+        // Process only if the line does not match ignored keywords
+        !ignored_keywords.iter().any(|kw| line.contains(kw))
+        // === End Filtering Rules ===
     }
 
     // Refactoring kludge
