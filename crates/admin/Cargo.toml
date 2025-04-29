@@ -18,8 +18,8 @@ regex = "1.11"
 serde_json = "1.0.120"
 serde = { version = "1.0.202", features = ["derive"] }
 strum = { version = "0.27", features = ["derive"] }
-tokio-stream = "0.1"
-tokio = { version = "1.45", features = [
+systemd = "0.10"
+tokio = { version = "1.44", features = [
   "rt-multi-thread",
   "time",
   "macros",
@@ -44,6 +44,13 @@ tracing-subscriber = { version = "0.3", features = [
   "local-time",
 ] }
 x509-parser = "0.17"
+axum = "0.6"
+hyper = { version = "0.14", features = ["full"] }
+base64 = "0.21"
+prost-derive = "0.13"
+snap = "1.1"
+prost-types = "0.13"
+chrono = { version = "0.4", features = ["serde"] }
 
 # GIVC subparts
 givc-common = { path = "../common" }

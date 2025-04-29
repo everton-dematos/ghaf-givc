@@ -22,11 +22,22 @@ let
 
     strictDeps = true;
 
-    nativeBuildInputs = [ protobuf ];
-    buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
-      # Additional darwin specific inputs can be set here
-      pkgs.libiconv
+    nativeBuildInputs = [
+      protobuf
+      pkgs.pkg-config
     ];
+
+    buildInputs =
+      pkgs.lib.optionals pkgs.stdenv.isDarwin [
+        # Additional darwin specific inputs can be set here
+        pkgs.libiconv
+      ]
+      ++ [
+        pkgs.systemd.dev
+      ];
+
+    # Needed for pkg-config to find libsystemd
+    PKG_CONFIG_PATH = "${pkgs.systemd.dev}/lib/pkgconfig";
   };
 
   givc = craneLib.buildPackage (
