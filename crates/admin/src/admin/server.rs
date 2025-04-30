@@ -11,10 +11,10 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use tokio::time::{interval, MissedTickBehavior};
-use tokio_stream::{wrappers::IntervalStream, StreamExt};
+use axum::{extract::Json, routing::post, serve, Router};
+use serde::Deserialize;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
 
 pub use pb::admin_service_server::AdminServiceServer;
 
@@ -51,6 +51,17 @@ pub struct AdminServiceImpl {
 #[derive(Debug, Clone)]
 pub struct AdminService {
     inner: Arc<AdminServiceImpl>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LokiLogBatch {
+    streams: Vec<LogStream>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LogStream {
+    stream: std::collections::HashMap<String, String>,
+    values: Vec<(String, String)>,
 }
 
 struct Validator();
@@ -316,83 +327,41 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(&self) {
-        info!("Starting local log monitoring...");
+        info!("Starting GIVC HTTP log receiver on 127.0.0.1:9000...");
 
-        loop {
-            let mut cmd = match Command::new("journalctl")
-                .args(["-f", "-o", "short"])
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Failed to spawn journalctl: {}", e);
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    continue; // Retry after delay
-                }
-            };
+        // Define router and endpoint
+        let app = Router::new().route("/logs", post(Self::receive_logs));
 
-            let ticker = IntervalStream::new({
-                let mut interval = interval(Duration::from_secs(5));
-                interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                interval
-            });
+        let addr = SocketAddr::from(([127, 0, 0, 1], 9000));
+        let listener = TcpListener::bind(addr).await.expect("Failed to bind");
 
-            tokio::pin!(ticker);
-
-            if let Some(stdout) = cmd.stdout.take() {
-                let reader = BufReader::new(stdout);
-                let mut lines = reader.lines();
-
-                loop {
-                    tokio::select! {
-                        Some(_) = ticker.next() => {
-                            debug!("Log monitor heartbeat...");
-                        }
-                        result = lines.next_line() => {
-                            match result {
-                                Ok(Some(line)) => {
-                                    // === Log Filtering Section ===
-                                    // Add or modify filtering logic.
-                                    if Self::should_log_be_processed(&line) {
-                                        info!("Received relevant log: {}", line);
-                                    }
-                                    // =============================
-                                }
-                                Ok(None) => {
-                                    error!("Journalctl stream closed. Restarting...");
-                                    break; // Restart journalctl
-                                }
-                                Err(e) => {
-                                    error!("Error reading journalctl output: {}. Restarting...", e);
-                                    break; // Restart journalctl
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                error!("Failed to capture stdout of journalctl process.");
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            }
-
-            // Safety delay before restart to avoid tight crash loops
-            tokio::time::sleep(Duration::from_secs(2)).await;
+        if let Err(e) = axum::serve(listener, app).await {
+            error!("Failed to start log receiver: {}", e);
         }
     }
 
-    /// Function to determine if a log line should be processed or ignored.
-    pub(crate) fn should_log_be_processed(line: &str) -> bool {
-        // === Filtering Rules ===
+    /// HTTP handler that receives logs pushed by Alloy (POST /logs)
+    async fn receive_logs(Json(payload): Json<LokiLogBatch>) {
+        for stream in payload.streams {
+            let source = stream
+                .stream
+                .get("nodename")
+                .cloned()
+                .unwrap_or_else(|| "unknown".into());
+            for (_timestamp, message) in stream.values {
+                if Self::should_log_be_processed(&message) {
+                    info!("[{}] Relevant log: {}", source, message);
+                } else {
+                    debug!("[{}] Ignored log: {}", source, message);
+                }
+            }
+        }
+    }
 
-        // Ignore system noise
-        let ignored_keywords = [
-            "givc-admin", // Avoid self-generated logs
-        ];
-
-        // Process only if the line does not match ignored keywords
+    /// Filter out unwanted logs
+    fn should_log_be_processed(line: &str) -> bool {
+        let ignored_keywords = ["givc-admin"];
         !ignored_keywords.iter().any(|kw| line.contains(kw))
-        // === End Filtering Rules ===
     }
 
     // Refactoring kludge
