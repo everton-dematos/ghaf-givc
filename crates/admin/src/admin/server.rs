@@ -332,7 +332,7 @@ impl AdminServiceImpl {
         // Define router and endpoint
         let app = Router::new().route("/logs", post(Self::receive_logs));
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], 9000));
+        let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
         let listener = TcpListener::bind(addr).await.expect("Failed to bind");
 
         if let Err(e) = axum::serve(listener, app).await {
