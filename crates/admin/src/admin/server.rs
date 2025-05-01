@@ -11,9 +11,11 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use axum::{extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router};
+use axum::http::StatusCode;
+use axum::{routing::post, Json, Router};
 use serde::Deserialize;
-use std::{collections::HashMap, net::SocketAddr};
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -53,12 +55,12 @@ pub struct AdminService {
     inner: Arc<AdminServiceImpl>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct LokiLogBatch {
     streams: Vec<LokiStream>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct LokiStream {
     stream: HashMap<String, String>,
     values: Vec<(String, String)>,
@@ -327,20 +329,21 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(&self) {
-        info!("Starting GIVC HTTP log receiver...");
+        info!("Starting GIVC HTTP log observer...");
 
-        let app = Router::new().route("/logs", post(Self::receive_logs));
+        let app = axum::Router::new().route("/givc/logs", axum::routing::post(Self::receive_logs));
 
-        let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
-        let listener = TcpListener::bind(addr).await.expect("Failed to bind");
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 9100));
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .expect("Failed to bind");
 
         if let Err(e) = axum::serve(listener, app).await {
-            error!("Failed to start log receiver: {}", e);
+            error!("Failed to start log observer: {}", e);
         }
     }
 
-    /// HTTP handler that receives logs pushed by Alloy (POST /logs)
-    async fn receive_logs(Json(payload): Json<LokiLogBatch>) -> impl IntoResponse {
+    async fn receive_logs(axum::Json(payload): axum::Json<LokiLogBatch>) -> axum::http::StatusCode {
         for stream in payload.streams {
             let source = stream
                 .stream
@@ -357,7 +360,7 @@ impl AdminServiceImpl {
             }
         }
 
-        StatusCode::OK
+        axum::http::StatusCode::OK
     }
 
     fn should_log_be_processed(line: &str) -> bool {
