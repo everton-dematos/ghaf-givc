@@ -11,10 +11,8 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use axum::http::StatusCode;
-use axum::{routing::post, Json, Router};
+use axum::{body::Bytes, http::StatusCode, response::IntoResponse, routing::post, Router};
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -55,15 +53,15 @@ pub struct AdminService {
     inner: Arc<AdminServiceImpl>,
 }
 
-#[derive(Deserialize)]
-struct LokiLogBatch {
-    streams: Vec<LokiStream>,
+#[derive(Debug, Deserialize)]
+pub struct LokiLogBatch {
+    pub streams: Vec<LokiStream>,
 }
 
-#[derive(Deserialize)]
-struct LokiStream {
-    stream: HashMap<String, String>,
-    values: Vec<(String, String)>,
+#[derive(Debug, Deserialize)]
+pub struct LokiStream {
+    pub stream: std::collections::HashMap<String, String>,
+    pub values: Vec<(String, String)>,
 }
 
 struct Validator();
@@ -329,38 +327,28 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(&self) {
-        info!("Starting GIVC HTTP log observer...");
+        info!("Starting GIVC HTTP log receiver...");
 
-        let app = axum::Router::new().route("/givc/logs", axum::routing::post(Self::receive_logs));
+        let app = Router::new().route("/givc/logs", post(Self::receive_logs));
 
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 9100));
-        let listener = tokio::net::TcpListener::bind(addr)
+        let addr = SocketAddr::from(([0, 0, 0, 0], 9100));
+        let listener = TcpListener::bind(addr)
             .await
-            .expect("Failed to bind");
+            .expect("Failed to bind log receiver");
 
         if let Err(e) = axum::serve(listener, app).await {
-            error!("Failed to start log observer: {}", e);
+            error!("Failed to start log receiver: {}", e);
         }
     }
 
-    async fn receive_logs(axum::Json(payload): axum::Json<LokiLogBatch>) -> axum::http::StatusCode {
-        for stream in payload.streams {
-            let source = stream
-                .stream
-                .get("nodename")
-                .cloned()
-                .unwrap_or_else(|| "unknown".into());
-
-            for (_timestamp, message) in stream.values {
-                if Self::should_log_be_processed(&message) {
-                    info!("[{}] Relevant log: {}", source, message);
-                } else {
-                    debug!("[{}] Ignored log: {}", source, message);
-                }
-            }
+    async fn receive_logs(body: Bytes) -> impl IntoResponse {
+        if let Ok(s) = std::str::from_utf8(&body) {
+            println!("Received raw log body:\n{}", s);
+        } else {
+            println!("Received non-UTF8 log body");
         }
 
-        axum::http::StatusCode::OK
+        StatusCode::OK
     }
 
     fn should_log_be_processed(line: &str) -> bool {
