@@ -11,9 +11,9 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use axum::{extract::Json, routing::post, serve, Router};
+use axum::{extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router};
 use serde::Deserialize;
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 use tokio::net::TcpListener;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -55,12 +55,12 @@ pub struct AdminService {
 
 #[derive(Debug, Deserialize)]
 struct LokiLogBatch {
-    streams: Vec<LogStream>,
+    streams: Vec<LokiStream>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LogStream {
-    stream: std::collections::HashMap<String, String>,
+struct LokiStream {
+    stream: HashMap<String, String>,
     values: Vec<(String, String)>,
 }
 
@@ -327,9 +327,8 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(&self) {
-        info!("Starting GIVC HTTP log receiver on 127.0.0.1:9000...");
+        info!("Starting GIVC HTTP log receiver...");
 
-        // Define router and endpoint
         let app = Router::new().route("/logs", post(Self::receive_logs));
 
         let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
@@ -341,13 +340,14 @@ impl AdminServiceImpl {
     }
 
     /// HTTP handler that receives logs pushed by Alloy (POST /logs)
-    async fn receive_logs(Json(payload): Json<LokiLogBatch>) {
+    async fn receive_logs(Json(payload): Json<LokiLogBatch>) -> impl IntoResponse {
         for stream in payload.streams {
             let source = stream
                 .stream
                 .get("nodename")
                 .cloned()
                 .unwrap_or_else(|| "unknown".into());
+
             for (_timestamp, message) in stream.values {
                 if Self::should_log_be_processed(&message) {
                     info!("[{}] Relevant log: {}", source, message);
@@ -356,9 +356,10 @@ impl AdminServiceImpl {
                 }
             }
         }
+
+        StatusCode::OK
     }
 
-    /// Filter out unwanted logs
     fn should_log_be_processed(line: &str) -> bool {
         let ignored_keywords = ["givc-admin"];
         !ignored_keywords.iter().any(|kw| line.contains(kw))
