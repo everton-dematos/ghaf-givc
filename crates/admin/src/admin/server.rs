@@ -11,7 +11,10 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use axum::{body::Bytes, http::StatusCode, response::IntoResponse, routing::post, Router};
+use axum::routing::post;
+use axum::Router;
+use axum::{body::Bytes, http::StatusCode, response::IntoResponse};
+use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -328,17 +331,14 @@ impl AdminServiceImpl {
     }
 
     async fn receive_logs(body: Bytes) -> impl IntoResponse {
-        println!("=== RAW BODY ===");
-        for byte in body.iter() {
-            if byte.is_ascii_graphic() || *byte == b' ' {
-                print!("{}", *byte as char);
-            } else {
-                print!(".");
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(json) => {
+                println!("Received JSON:\n{}", json);
+            }
+            Err(_) => {
+                println!("Received non-JSON or invalid UTF-8:\n{:?}", body);
             }
         }
-
-        println!("\n=== END ===");
-
         StatusCode::OK
     }
 
