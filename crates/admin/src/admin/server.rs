@@ -12,7 +12,6 @@ use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
 use axum::{body::Bytes, http::StatusCode, response::IntoResponse, routing::post, Router};
-use serde::Deserialize;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -51,17 +50,6 @@ pub struct AdminServiceImpl {
 #[derive(Debug, Clone)]
 pub struct AdminService {
     inner: Arc<AdminServiceImpl>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LokiLogBatch {
-    pub streams: Vec<LokiStream>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LokiStream {
-    pub stream: std::collections::HashMap<String, String>,
-    pub values: Vec<(String, String)>,
 }
 
 struct Validator();
@@ -332,23 +320,26 @@ impl AdminServiceImpl {
         let app = Router::new().route("/givc/logs", post(Self::receive_logs));
 
         let addr = SocketAddr::from(([0, 0, 0, 0], 9100));
-        let listener = TcpListener::bind(addr)
-            .await
-            .expect("Failed to bind log receiver");
+        let listener = TcpListener::bind(addr).await.expect("Failed to bind ");
 
         if let Err(e) = axum::serve(listener, app).await {
-            error!("Failed to start log receiver: {}", e);
+            error!("Axum server failed: {}", e);
         }
     }
 
     async fn receive_logs(body: Bytes) -> impl IntoResponse {
-        if let Ok(s) = std::str::from_utf8(&body) {
-            println!("Received raw log body:\n{}", s);
-        } else {
-            println!("Received non-UTF8 log body");
-        }
+        info!("Received a POST /givc/logs");
 
-        StatusCode::OK
+        match std::str::from_utf8(&body) {
+            Ok(s) => {
+                println!("Raw log body:\n{}", s);
+                StatusCode::OK
+            }
+            Err(_) => {
+                println!("Received non-UTF8 log body");
+                StatusCode::BAD_REQUEST
+            }
+        }
     }
 
     fn should_log_be_processed(line: &str) -> bool {
