@@ -328,18 +328,18 @@ impl AdminServiceImpl {
     }
 
     async fn receive_logs(body: Bytes) -> impl IntoResponse {
-        info!("Received a POST /givc/logs");
-
-        match std::str::from_utf8(&body) {
-            Ok(s) => {
-                println!("Raw log body:\n{}", s);
-                StatusCode::OK
-            }
-            Err(_) => {
-                println!("Received non-UTF8 log body");
-                StatusCode::BAD_REQUEST
+        println!("=== RAW BODY ===");
+        for byte in body.iter() {
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                print!("{}", *byte as char);
+            } else {
+                print!(".");
             }
         }
+
+        println!("\n=== END ===");
+
+        StatusCode::OK
     }
 
     fn should_log_be_processed(line: &str) -> bool {
