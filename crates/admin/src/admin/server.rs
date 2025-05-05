@@ -11,13 +11,8 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use axum::routing::post;
-use axum::Router;
-use axum::{body::Bytes, http::StatusCode, response::IntoResponse};
-use serde_json::Value;
-use std::net::SocketAddr;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::TcpListener;
+use reqwest::Client;
+use tokio::time::sleep;
 
 pub use pb::admin_service_server::AdminServiceServer;
 
@@ -81,7 +76,7 @@ impl AdminService {
         });
         let clone_hello = inner.clone();
         tokio::task::spawn(async move {
-            clone_hello.log_monitor().await;
+            clone_hello.log_monitor_polling().await;
         });
         Self { inner }
     }
@@ -318,18 +313,28 @@ impl AdminServiceImpl {
         }
     }
 
-    pub async fn log_monitor(&self) -> anyhow::Result<()> {
-        let listener = TcpListener::bind("127.0.0.1:5001").await?;
-        info!("Listening for logs on 127.0.0.1:5001");
+    pub async fn log_monitor_polling(&self) -> anyhow::Result<()> {
+        info!("Starting Log Monitor Polling...");
+
+        let client = Client::new();
 
         loop {
-            let (stream, _) = listener.accept().await?;
-            let reader = BufReader::new(stream);
-            let mut lines = reader.lines();
+            let now = chrono::Utc::now();
+            let ten_seconds_ago = now - chrono::Duration::seconds(10);
 
-            while let Some(line) = lines.next_line().await? {
-                info!("[LOG_MONITOR] {}", line);
-            }
+            let start_ns = ten_seconds_ago.timestamp_nanos_opt().unwrap_or(0);
+            let end_ns = now.timestamp_nanos_opt().unwrap_or(0);
+
+            let url = format!(
+                "http://localhost:9999/loki/api/v1/query_range?query={{job=\"journald\"}}&start={}&end={}",
+                start_ns, end_ns
+            );
+
+            let res = client.get(&url).send().await?;
+            let body = res.text().await?;
+            info!("[LOKI LOGS] {}", body);
+
+            sleep(Duration::from_secs(10)).await;
         }
     }
 
