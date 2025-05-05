@@ -16,6 +16,7 @@ use axum::Router;
 use axum::{body::Bytes, http::StatusCode, response::IntoResponse};
 use serde_json::Value;
 use std::net::SocketAddr;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -317,34 +318,19 @@ impl AdminServiceImpl {
         }
     }
 
-    pub async fn log_monitor(&self) {
-        info!("Starting GIVC HTTP log receiver...");
+    pub async fn log_monitor(&self) -> anyhow::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:5001").await?;
+        info!("Listening for logs on 127.0.0.1:5001");
 
-        let app = Router::new().route("/givc/logs", post(Self::receive_logs));
+        loop {
+            let (stream, _) = listener.accept().await?;
+            let reader = BufReader::new(stream);
+            let mut lines = reader.lines();
 
-        let addr = SocketAddr::from(([0, 0, 0, 0], 9100));
-        let listener = TcpListener::bind(addr).await.expect("Failed to bind ");
-
-        if let Err(e) = axum::serve(listener, app).await {
-            error!("Axum server failed: {}", e);
-        }
-    }
-
-    async fn receive_logs(body: Bytes) -> impl IntoResponse {
-        match serde_json::from_slice::<Value>(&body) {
-            Ok(json) => {
-                println!("Received JSON:\n{}", json);
-            }
-            Err(_) => {
-                println!("Received non-JSON or invalid UTF-8:\n{:?}", body);
+            while let Some(line) = lines.next_line().await? {
+                info!("[LOG_MONITOR] {}", line);
             }
         }
-        StatusCode::OK
-    }
-
-    fn should_log_be_processed(line: &str) -> bool {
-        let ignored_keywords = ["givc-admin"];
-        !ignored_keywords.iter().any(|kw| line.contains(kw))
     }
 
     // Refactoring kludge
