@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
+use ::systemd::journal::{Journal, JournalFiles, JournalSeek};
 use std::io;
-use systemd::journal::{Journal, JournalFiles, JournalSeek};
 use tokio::task;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -315,7 +315,6 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(&self) {
-        // Spawn a blocking task so we don't block the async runtime
         task::spawn_blocking(|| {
             if let Err(e) = Self::read_journal_logs() {
                 eprintln!("Error reading journal: {}", e);
@@ -325,16 +324,16 @@ impl AdminServiceImpl {
 
     fn read_journal_logs() -> io::Result<()> {
         let mut journal = Journal::open(JournalFiles::All, false, false)?;
-        journal.seek(JournalSeek::Tail)?;
-        journal.watch_all()?;
 
-        println!("Starting to monitor journal logs...");
+        journal.seek(JournalSeek::Tail)?;
+
+        info!("Started journal log monitor...");
 
         loop {
             journal.wait(None)?;
             while let Some(entry) = journal.next_entry()? {
                 if let Some(message) = entry.get("MESSAGE") {
-                    println!("[LOG] {}", message);
+                    info!("[LOG] {}", message);
                 }
             }
         }
