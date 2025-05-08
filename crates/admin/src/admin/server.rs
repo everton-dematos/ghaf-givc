@@ -11,8 +11,9 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use reqwest::Client;
-use tokio::time::sleep;
+use std::io;
+use systemd::journal::{Journal, JournalFiles, JournalSeek};
+use tokio::task;
 
 pub use pb::admin_service_server::AdminServiceServer;
 
@@ -76,7 +77,7 @@ impl AdminService {
         });
         let clone_hello = inner.clone();
         tokio::task::spawn(async move {
-            clone_hello.log_monitor_polling().await;
+            clone_hello.log_monitor().await;
         });
         Self { inner }
     }
@@ -313,28 +314,29 @@ impl AdminServiceImpl {
         }
     }
 
-    pub async fn log_monitor_polling(&self) -> anyhow::Result<()> {
-        info!("Starting Log Monitor Polling...");
+    pub async fn log_monitor(&self) {
+        // Spawn a blocking task so we don't block the async runtime
+        task::spawn_blocking(|| {
+            if let Err(e) = Self::read_journal_logs() {
+                eprintln!("Error reading journal: {}", e);
+            }
+        });
+    }
 
-        let client = Client::new();
+    fn read_journal_logs() -> io::Result<()> {
+        let mut journal = Journal::open(JournalFiles::All, false, false)?;
+        journal.seek(JournalSeek::Tail)?;
+        journal.watch_all()?;
+
+        println!("Starting to monitor journal logs...");
 
         loop {
-            let now = chrono::Utc::now();
-            let ten_seconds_ago = now - chrono::Duration::seconds(10);
-
-            let start_ns = ten_seconds_ago.timestamp_nanos_opt().unwrap_or(0);
-            let end_ns = now.timestamp_nanos_opt().unwrap_or(0);
-
-            let url = format!(
-                "http://localhost:9999/loki/api/v1/query_range?query={{job=\"journald\"}}&start={}&end={}",
-                start_ns, end_ns
-            );
-
-            let res = client.get(&url).send().await?;
-            let body = res.text().await?;
-            info!("[LOKI LOGS] {}", body);
-
-            sleep(Duration::from_secs(10)).await;
+            journal.wait(None)?;
+            while let Some(entry) = journal.next_entry()? {
+                if let Some(message) = entry.get("MESSAGE") {
+                    println!("[LOG] {}", message);
+                }
+            }
         }
     }
 
