@@ -332,9 +332,10 @@ impl AdminServiceImpl {
         loop {
             journal.wait(None)?;
             while let Some(entry) = journal.next_entry()? {
-                if let Some(message) = entry.get("MESSAGE") {
-                    info!("[LOG] {}", message);
+                for (key, value) in entry.iter() {
+                    info!("{} = {}", key, value);
                 }
+                info!("────────────────────────────────────────────");
             }
         }
     }
