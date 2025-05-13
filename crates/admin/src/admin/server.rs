@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use ::systemd::journal::{Journal, JournalFiles, JournalSeek};
+use ::systemd::journal::{Journal, JournalSeek, OpenOptions};
 use std::io;
 use tokio::task;
 
@@ -75,10 +75,10 @@ impl AdminService {
         tokio::task::spawn(async move {
             clone.monitor().await;
         });
-        let clone_hello = inner.clone();
-        tokio::task::spawn(async move {
-            clone_hello.log_monitor().await;
-        });
+        // let clone_hello = inner.clone();
+        // tokio::task::spawn(async move {
+        //     clone_hello.log_monitor().await;
+        // });
         Self { inner }
     }
 }
@@ -323,19 +323,21 @@ impl AdminServiceImpl {
     }
 
     fn read_journal_logs() -> io::Result<()> {
-        let mut journal = Journal::open(JournalFiles::All, false, false)?;
+        // Use OpenOptions::all() to read everything (default: readable = true, local_only = false)
+        let mut journal = OpenOptions::all().open()?;
 
+        // Start reading from the end of the journal (tail)
         journal.seek(JournalSeek::Tail)?;
 
-        info!("Started journal log monitor...");
+        println!("Started journal log monitor...");
 
         loop {
-            journal.wait(None)?;
+            journal.wait(None)?; // Wait for new entries
             while let Some(entry) = journal.next_entry()? {
-                for (key, value) in entry.iter() {
-                    info!("{} = {}", key, value);
+                for (k, v) in entry.iter() {
+                    println!("{} = {}", k, v);
                 }
-                info!("────────────────────────────────────────────");
+                println!("LOG ─────────────────────────────");
             }
         }
     }
