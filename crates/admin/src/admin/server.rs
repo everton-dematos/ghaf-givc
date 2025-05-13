@@ -322,25 +322,25 @@ impl AdminServiceImpl {
         // });
     }
 
-    fn read_journal_logs() -> io::Result<()> {
-        // // Use OpenOptions::all() to read everything (default: readable = true, local_only = false)
-        // let mut journal = OpenOptions::all().open()?;
+    // fn read_journal_logs() -> io::Result<()> {
+    //     // // Use OpenOptions::all() to read everything (default: readable = true, local_only = false)
+    //     // let mut journal = OpenOptions::all().open()?;
 
-        // // Start reading from the end of the journal (tail)
-        // journal.seek(JournalSeek::Tail)?;
+    //     // // Start reading from the end of the journal (tail)
+    //     // journal.seek(JournalSeek::Tail)?;
 
-        // println!("Started journal log monitor...");
+    //     // println!("Started journal log monitor...");
 
-        // loop {
-        //     journal.wait(None)?; // Wait for new entries
-        //     while let Some(entry) = journal.next_entry()? {
-        //         for (k, v) in entry.iter() {
-        //             println!("{} = {}", k, v);
-        //         }
-        //         println!("LOG ─────────────────────────────");
-        //     }
-        // }
-    }
+    //     // loop {
+    //     //     journal.wait(None)?; // Wait for new entries
+    //     //     while let Some(entry) = journal.next_entry()? {
+    //     //         for (k, v) in entry.iter() {
+    //     //             println!("{} = {}", k, v);
+    //     //         }
+    //     //         println!("LOG ─────────────────────────────");
+    //     //     }
+    //     // }
+    // }
 
     // Refactoring kludge
     pub fn register(&self, entry: RegistryEntry) {
