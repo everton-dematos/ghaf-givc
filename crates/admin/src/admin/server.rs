@@ -11,9 +11,10 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use futures_util::{SinkExt, StreamExt};
+use async_tungstenite::tokio::connect_async;
+use futures_util::StreamExt;
+use http::{header::HeaderValue, Request};
 use serde::Deserialize;
-use tokio_tungstenite::connect_async;
 use url::Url;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -327,7 +328,6 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(&self) {
-        // Tail only logs from net-vm
         let query = "{nodename=\"net-vm\"}";
         let start_ns = chrono::Utc::now().timestamp_nanos();
         let url_str = format!(
@@ -336,11 +336,16 @@ impl AdminServiceImpl {
             start_ns
         );
 
-        let url = Url::parse(&url_str).expect("Invalid Loki WebSocket URL");
+        let request = Request::builder()
+            .method("GET")
+            .uri(&url_str)
+            .header("X-Scope-OrgID", HeaderValue::from_static("journal"))
+            .body(())
+            .expect("Failed to build WebSocket request");
 
-        info!("Connecting to Loki tail API: {}", url);
+        info!("Connecting to Loki tail API: {}", url_str);
 
-        let (ws_stream, _) = match connect_async(url).await {
+        let (ws_stream, _) = match connect_async(request).await {
             Ok(conn) => conn,
             Err(e) => {
                 error!("Failed to connect to Loki WebSocket API: {}", e);
