@@ -13,7 +13,7 @@ use tracing::{debug, error, info};
 
 use async_tungstenite::tokio::connect_async;
 use futures_util::StreamExt;
-use http::{header::HeaderValue, Request};
+use http::{header::HeaderValue, Request, Uri};
 use serde::Deserialize;
 use tokio::time::sleep;
 use url::Url;
@@ -329,28 +329,31 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(&self) {
-        let query = "{nodename=\"net-vm\"}";
-        let start_ns = chrono::Utc::now().timestamp_nanos();
-        let encoded_query = urlencoding::encode(query);
-        let url_str = format!(
-            "ws://127.0.0.1:3100/loki/api/v1/tail?query={}&start={}",
-            encoded_query, start_ns
-        );
-
         loop {
+            let query = "{nodename=\"net-vm\"}";
+            let start_ns = chrono::Utc::now().timestamp_nanos();
+            let encoded_query = urlencoding::encode(query);
+            let url_str = format!(
+                "ws://127.0.0.1:3100/loki/api/v1/tail?query={}&start={}",
+                encoded_query, start_ns
+            );
+
+            // Parse into Url (for debugging/logging) and Uri (for the request)
+            let url = Url::parse(&url_str).expect("Invalid URL format");
+            let uri: Uri = url_str.parse().expect("Failed to parse URI");
+
+            info!("Attempting connection to Loki tail API: {}", url);
+
             let request = Request::builder()
                 .method("GET")
-                .uri(&url_str)
+                .uri(uri)
                 .header("X-Scope-OrgID", HeaderValue::from_static("journal"))
                 .body(())
                 .expect("Failed to build WebSocket request");
 
-            info!("Attempting connection to Loki tail API...");
-
             match connect_async(request).await {
                 Ok((ws_stream, _)) => {
                     info!("Connected to Loki. Listening for logs...");
-
                     let (_, mut read) = ws_stream.split();
 
                     while let Some(msg_result) = read.next().await {
