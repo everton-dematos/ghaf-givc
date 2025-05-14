@@ -11,9 +11,10 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use ::systemd::journal::{Journal, JournalSeek, OpenOptions};
-use std::io;
-use tokio::task;
+use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
+use tokio_tungstenite::connect_async;
+use url::Url;
 
 pub use pb::admin_service_server::AdminServiceServer;
 
@@ -52,6 +53,17 @@ pub struct AdminService {
     inner: Arc<AdminServiceImpl>,
 }
 
+#[derive(Debug, Deserialize)]
+struct LokiStreamEntry {
+    stream: std::collections::HashMap<String, String>,
+    values: Vec<(String, String)>, // (timestamp, log message)
+}
+
+#[derive(Debug, Deserialize)]
+struct LokiStreamResponse {
+    streams: Vec<LokiStreamEntry>,
+}
+
 struct Validator();
 
 impl Validator {
@@ -75,10 +87,10 @@ impl AdminService {
         tokio::task::spawn(async move {
             clone.monitor().await;
         });
-        // let clone_hello = inner.clone();
-        // tokio::task::spawn(async move {
-        //     clone_hello.log_monitor().await;
-        // });
+        let clone_hello = inner.clone();
+        tokio::task::spawn(async move {
+            clone_hello.log_monitor().await;
+        });
         Self { inner }
     }
 }
@@ -315,32 +327,56 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(&self) {
-        // task::spawn_blocking(|| {
-        //     if let Err(e) = Self::read_journal_logs() {
-        //         eprintln!("Error reading journal: {}", e);
-        //     }
-        // });
+        // Tail only logs from net-vm
+        let query = "{nodename=\"net-vm\"}";
+        let start_ns = chrono::Utc::now().timestamp_nanos();
+        let url_str = format!(
+            "ws://127.0.0.1:3100/loki/api/v1/tail?query={}&start={}",
+            urlencoding::encode(query),
+            start_ns
+        );
+
+        let url = Url::parse(&url_str).expect("Invalid Loki WebSocket URL");
+
+        info!("Connecting to Loki tail API: {}", url);
+
+        let (ws_stream, _) = match connect_async(url).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                error!("Failed to connect to Loki WebSocket API: {}", e);
+                return;
+            }
+        };
+
+        info!("Connected to Loki. Waiting for logs...");
+
+        let (_, mut read) = ws_stream.split();
+
+        while let Some(msg_result) = read.next().await {
+            match msg_result {
+                Ok(msg) => {
+                    if msg.is_text() {
+                        let text = msg.into_text().unwrap();
+                        if let Ok(parsed) = serde_json::from_str::<LokiStreamResponse>(&text) {
+                            for stream in parsed.streams {
+                                for (ts, line) in stream.values {
+                                    info!("[{}] {}", ts, line);
+                                }
+                            }
+                        } else {
+                            error!("Failed to parse message: {}", text);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("WebSocket error: {}", e);
+                    break;
+                }
+            }
+        }
+
+        info!("Loki WebSocket connection closed.");
     }
-
-    // fn read_journal_logs() -> io::Result<()> {
-    //     // // Use OpenOptions::all() to read everything (default: readable = true, local_only = false)
-    //     // let mut journal = OpenOptions::all().open()?;
-
-    //     // // Start reading from the end of the journal (tail)
-    //     // journal.seek(JournalSeek::Tail)?;
-
-    //     // println!("Started journal log monitor...");
-
-    //     // loop {
-    //     //     journal.wait(None)?; // Wait for new entries
-    //     //     while let Some(entry) = journal.next_entry()? {
-    //     //         for (k, v) in entry.iter() {
-    //     //             println!("{} = {}", k, v);
-    //     //         }
-    //     //         println!("LOG ─────────────────────────────");
-    //     //     }
-    //     // }
-    // }
 
     // Refactoring kludge
     pub fn register(&self, entry: RegistryEntry) {
