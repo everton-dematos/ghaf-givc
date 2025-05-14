@@ -15,6 +15,7 @@ use async_tungstenite::tokio::connect_async;
 use futures_util::StreamExt;
 use http::{header::HeaderValue, Request};
 use serde::Deserialize;
+use tokio::time::sleep;
 use url::Url;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -330,57 +331,62 @@ impl AdminServiceImpl {
     pub async fn log_monitor(&self) {
         let query = "{nodename=\"net-vm\"}";
         let start_ns = chrono::Utc::now().timestamp_nanos();
+        let encoded_query = urlencoding::encode(query);
         let url_str = format!(
             "ws://127.0.0.1:3100/loki/api/v1/tail?query={}&start={}",
-            urlencoding::encode(query),
-            start_ns
+            encoded_query, start_ns
         );
 
-        let request = Request::builder()
-            .method("GET")
-            .uri(&url_str)
-            .header("X-Scope-OrgID", HeaderValue::from_static("journal"))
-            .body(())
-            .expect("Failed to build WebSocket request");
+        loop {
+            let request = Request::builder()
+                .method("GET")
+                .uri(&url_str)
+                .header("X-Scope-OrgID", HeaderValue::from_static("journal"))
+                .body(())
+                .expect("Failed to build WebSocket request");
 
-        info!("Connecting to Loki tail API: {}", url_str);
+            info!("Attempting connection to Loki tail API...");
 
-        let (ws_stream, _) = match connect_async(request).await {
-            Ok(conn) => conn,
-            Err(e) => {
-                error!("Failed to connect to Loki WebSocket API: {}", e);
-                return;
-            }
-        };
+            match connect_async(request).await {
+                Ok((ws_stream, _)) => {
+                    info!("Connected to Loki. Listening for logs...");
 
-        info!("Connected to Loki. Waiting for logs...");
+                    let (_, mut read) = ws_stream.split();
 
-        let (_, mut read) = ws_stream.split();
-
-        while let Some(msg_result) = read.next().await {
-            match msg_result {
-                Ok(msg) => {
-                    if msg.is_text() {
-                        let text = msg.into_text().unwrap();
-                        if let Ok(parsed) = serde_json::from_str::<LokiStreamResponse>(&text) {
-                            for stream in parsed.streams {
-                                for (ts, line) in stream.values {
-                                    info!("[{}] {}", ts, line);
+                    while let Some(msg_result) = read.next().await {
+                        match msg_result {
+                            Ok(msg) => {
+                                if msg.is_text() {
+                                    let text = msg.into_text().unwrap();
+                                    if let Ok(parsed) =
+                                        serde_json::from_str::<LokiStreamResponse>(&text)
+                                    {
+                                        for stream in parsed.streams {
+                                            for (ts, line) in stream.values {
+                                                info!("[{}] {}", ts, line);
+                                            }
+                                        }
+                                    } else {
+                                        error!("Failed to parse message: {}", text);
+                                    }
                                 }
                             }
-                        } else {
-                            error!("Failed to parse message: {}", text);
+                            Err(e) => {
+                                error!("WebSocket read error: {}", e);
+                                break;
+                            }
                         }
                     }
+
+                    info!("Loki WebSocket connection closed. Reconnecting...");
                 }
                 Err(e) => {
-                    error!("WebSocket error: {}", e);
-                    break;
+                    error!("Failed to connect to Loki WebSocket API: {}", e);
+                    info!("Retrying in 5 seconds...");
+                    sleep(Duration::from_secs(5)).await;
                 }
             }
         }
-
-        info!("Loki WebSocket connection closed.");
     }
 
     // Refactoring kludge
