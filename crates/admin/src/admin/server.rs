@@ -11,13 +11,10 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use async_tungstenite::tokio::connect_async;
-use futures_util::StreamExt;
-use http::Request;
+use axum::{extract::Json, routing::post, Router};
+use hyper::Server;
 use serde::Deserialize;
-use std::collections::HashMap;
-use tokio::time::sleep;
-use url::Url;
+use std::net::SocketAddr;
 
 pub use pb::admin_service_server::AdminServiceServer;
 
@@ -56,16 +53,24 @@ pub struct AdminService {
     inner: Arc<AdminServiceImpl>,
 }
 
+//rustreceiver
 #[derive(Debug, Deserialize)]
-struct LokiStreamEntry {
-    stream: std::collections::HashMap<String, String>,
-    values: Vec<(String, String)>, // (timestamp, log message)
+struct LogStream {
+    labels: String,
+    entries: Vec<Entry>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LokiStreamResponse {
-    streams: Vec<LokiStreamEntry>,
+struct LogPayload {
+    streams: Vec<LogStream>,
 }
+
+#[derive(Debug, Deserialize)]
+struct Entry {
+    ts: String,
+    line: String,
+}
+//rustreceiver
 
 struct Validator();
 
@@ -329,65 +334,22 @@ impl AdminServiceImpl {
         }
     }
 
-    pub async fn log_monitor(&self) {
-        loop {
-            let query = "{nodename=\"net-vm\"}";
-            let start_ns = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-            let encoded_query = urlencoding::encode(query);
-            let url_str = format!(
-                "ws://127.0.0.1:3100/loki/api/v1/tail?query={}&start={}",
-                encoded_query, start_ns
-            );
-
-            let url = Url::parse(&url_str).expect("Invalid Loki WebSocket URL");
-
-            info!("Attempting connection to Loki tail API: {}", url);
-
-            // Build upgrade request with X-Scope-OrgID header
-            let request = Request::builder()
-                .uri(url.as_str())
-                .header("X-Scope-OrgID", "journal")
-                .body(())
-                .expect("Failed to build WebSocket request");
-
-            match connect_async(request).await {
-                Ok((ws_stream, _)) => {
-                    info!("Connected to Loki. Listening for logs...");
-                    let (_, mut read) = ws_stream.split();
-
-                    while let Some(msg_result) = read.next().await {
-                        match msg_result {
-                            Ok(msg) => {
-                                if msg.is_text() {
-                                    let text = msg.into_text().unwrap();
-                                    if let Ok(parsed) =
-                                        serde_json::from_str::<LokiStreamResponse>(&text)
-                                    {
-                                        for stream in parsed.streams {
-                                            for (ts, line) in stream.values {
-                                                info!("[{}] {}", ts, line);
-                                            }
-                                        }
-                                    } else {
-                                        error!("Failed to parse message: {}", text);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("WebSocket read error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-
-                    info!("Loki WebSocket connection closed. Reconnecting...");
-                }
-                Err(e) => {
-                    error!("Failed to connect to Loki WebSocket API: {}", e);
-                    info!("Retrying in 5 seconds...");
-                    sleep(Duration::from_secs(5)).await;
+    pub async fn log_monitor(self: Arc<Self>) {
+        async fn handle_logs(Json(payload): Json<LogPayload>) {
+            for stream in payload.streams {
+                for entry in stream.entries {
+                    info!("[{}] {}", entry.ts, entry.line);
                 }
             }
+        }
+
+        let app = Router::new().route("/logs", post(handle_logs));
+        let addr = SocketAddr::from(([127, 0, 0, 1], 8484));
+
+        info!("Log monitor started at http://{}", addr);
+
+        if let Err(e) = Server::bind(&addr).serve(app.into_make_service()).await {
+            info!("Log monitor server failed: {}", e);
         }
     }
 
