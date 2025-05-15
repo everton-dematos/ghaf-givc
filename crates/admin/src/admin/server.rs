@@ -11,9 +11,10 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use async_tungstenite::tokio::connect_async;
+use async_tungstenite::{
+    tokio::connect_async_with_config, tungstenite::handshake::client::Request,
+};
 use futures_util::StreamExt;
-use http::{header::HeaderValue, Request, Uri};
 use serde::Deserialize;
 use tokio::time::sleep;
 use url::Url;
@@ -331,27 +332,23 @@ impl AdminServiceImpl {
     pub async fn log_monitor(&self) {
         loop {
             let query = "{nodename=\"net-vm\"}";
-            let start_ns = chrono::Utc::now().timestamp_nanos();
+            let start_ns = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
             let encoded_query = urlencoding::encode(query);
             let url_str = format!(
                 "ws://127.0.0.1:3100/loki/api/v1/tail?query={}&start={}",
                 encoded_query, start_ns
             );
 
-            // Parse into Url (for debugging/logging) and Uri (for the request)
-            let url = Url::parse(&url_str).expect("Invalid URL format");
-            let uri: Uri = url_str.parse().expect("Failed to parse URI");
+            let url = Url::parse(&url_str).expect("Invalid Loki WebSocket URL");
 
-            info!("Attempting connection to Loki tail API: {}", url);
-
-            let request = Request::builder()
-                .method("GET")
-                .uri(uri)
-                .header("X-Scope-OrgID", HeaderValue::from_static("journal"))
+            let req = Request::get(url.as_str())
+                .header("X-Scope-OrgID", "journal")
                 .body(())
                 .expect("Failed to build WebSocket request");
 
-            match connect_async(request).await {
+            info!("Attempting connection to Loki tail API: {}", url);
+
+            match connect_async_with_config(req, None).await {
                 Ok((ws_stream, _)) => {
                     info!("Connected to Loki. Listening for logs...");
                     let (_, mut read) = ws_stream.split();
