@@ -11,7 +11,10 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use axum::{extract::Json, routing::post, Router};
+use axum::body::Bytes;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{routing::post, Router};
 use hyper::Server;
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -335,12 +338,11 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(self: Arc<Self>) {
-        async fn handle_logs(Json(payload): Json<LogPayload>) {
-            for stream in payload.streams {
-                for entry in stream.entries {
-                    info!("[{}] {}", entry.ts, entry.line);
-                }
-            }
+        async fn handle_logs(body: Bytes) -> impl IntoResponse {
+            let text = String::from_utf8_lossy(&body);
+            info!("Received raw payload: {}", text);
+            // Optionally attempt deserialization below
+            StatusCode::OK
         }
 
         let app = Router::new().route("/logs", post(handle_logs));
