@@ -11,12 +11,12 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
+use axum::body::Bytes;
 use axum::response::IntoResponse;
-use axum::{body::Bytes, http::StatusCode, routing::post, Router};
-use base64::{engine::general_purpose, Engine as _};
-use hyper::Server;
-use serde::Deserialize;
-use std::{collections::HashMap, net::SocketAddr};
+use axum::{http::StatusCode, routing::post, Router};
+use prost::Message;
+use snap::raw::Decoder;
+use std::net::SocketAddr;
 
 pub use pb::admin_service_server::AdminServiceServer;
 
@@ -56,15 +56,28 @@ pub struct AdminService {
 }
 
 //rustreceiver
-#[derive(Debug, Deserialize)]
-struct LogStream {
-    stream: HashMap<String, String>,
-    values: Vec<(String, String)>,
+#[derive(prost::Message)]
+struct PushRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub streams: Vec<LogStream>,
 }
 
-#[derive(Debug, Deserialize)]
-struct LogPayload {
-    streams: Vec<LogStream>,
+#[derive(prost::Message)]
+struct LogStream {
+    #[prost(map = "string, string", tag = "1")]
+    pub labels: std::collections::HashMap<String, String>,
+
+    #[prost(message, repeated, tag = "2")]
+    pub entries: Vec<LogEntry>,
+}
+
+#[derive(prost::Message)]
+struct LogEntry {
+    #[prost(string, tag = "1")]
+    pub timestamp: String,
+
+    #[prost(string, tag = "2")]
+    pub line: String,
 }
 //rustreceiver
 
@@ -332,36 +345,23 @@ impl AdminServiceImpl {
 
     pub async fn log_monitor(self: Arc<Self>) {
         async fn handle_logs(body: Bytes) -> impl IntoResponse {
-            fn try_parse_and_log(data: &[u8]) -> Result<(), serde_json::Error> {
-                let payload: LogPayload = serde_json::from_slice(data)?;
-                for stream in payload.streams {
-                    for (ts, line) in stream.values {
-                        info!("[{}] {}", ts, line);
-                    }
-                }
-                Ok(())
-            }
+            let mut decoder = Decoder::new();
 
-            // First try parsing the body directly
-            if let Err(e) = try_parse_and_log(&body) {
-                error!("Direct JSON parse failed: {}", e);
-
-                // Try base64 decode if body is not valid UTF-8/JSON
-                match general_purpose::STANDARD.decode(&body) {
-                    Ok(decoded) => match try_parse_and_log(&decoded) {
-                        Ok(_) => info!("Successfully parsed base64-decoded JSON"),
-                        Err(e2) => {
-                            error!("Base64-decoded JSON parse failed: {}", e2);
-                            error!(
-                                "Raw base64 (trimmed): {}",
-                                &body[..std::cmp::min(body.len(), 200)].escape_ascii()
-                            );
+            match decoder.decompress_vec(&body) {
+                Ok(decompressed) => match PushRequest::decode(&*decompressed) {
+                    Ok(decoded) => {
+                        for stream in decoded.streams {
+                            for entry in stream.entries {
+                                info!("[{}] {}", entry.timestamp, entry.line);
+                            }
                         }
-                    },
-                    Err(e3) => {
-                        error!("Failed to base64 decode body: {}", e3);
-                        error!("Raw body is not base64 or valid UTF-8.");
                     }
+                    Err(e) => {
+                        error!("Failed to decode protobuf payload: {}", e);
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to decompress snappy body: {}", e);
                 }
             }
 
@@ -373,7 +373,10 @@ impl AdminServiceImpl {
 
         info!("Log monitor started at http://{}", addr);
 
-        if let Err(e) = Server::bind(&addr).serve(app.into_make_service()).await {
+        if let Err(e) = axum::Server::bind(&addr)
+            .serve(app.into_make_service())
+            .await
+        {
             error!("Log monitor server failed: {}", e);
         }
     }
