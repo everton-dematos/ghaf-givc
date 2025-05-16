@@ -11,13 +11,9 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use axum::body::Bytes;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::{routing::post, Router};
-use hyper::Server;
+use axum::{body::Bytes, response::IntoResponse, routing::post, Router};
+use hyper::StatusCode;
 use serde::Deserialize;
-use serde_json::Value;
 use std::net::SocketAddr;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -58,21 +54,15 @@ pub struct AdminService {
 }
 
 //rustreceiver
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct LogStream {
-    labels: String,
-    entries: Vec<Entry>,
+    stream: std::collections::HashMap<String, String>,
+    values: Vec<(String, String)>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LogPayload {
     streams: Vec<LogStream>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Entry {
-    ts: String,
-    line: String,
 }
 //rustreceiver
 
@@ -340,21 +330,16 @@ impl AdminServiceImpl {
 
     pub async fn log_monitor(self: Arc<Self>) {
         async fn handle_logs(body: Bytes) -> impl IntoResponse {
-            match serde_json::from_slice::<serde_json::Value>(&body) {
-                Ok(json) => {
-                    // Pretty-print the JSON
-                    match serde_json::to_string_pretty(&json) {
-                        Ok(pretty) => {
-                            info!("Received JSON:\n{}", pretty);
-                        }
-                        Err(e) => {
-                            error!("Failed to pretty-print JSON: {}", e);
+            match serde_json::from_slice::<LogPayload>(&body) {
+                Ok(payload) => {
+                    for stream in payload.streams {
+                        for (ts, line) in stream.values {
+                            info!("[{}] {}", ts, line);
                         }
                     }
                 }
                 Err(e) => {
                     error!("Failed to parse JSON body: {}", e);
-                    // Optionally, also dump the raw string to help debug
                     match String::from_utf8(body.to_vec()) {
                         Ok(s) => error!("Raw body: {}", s),
                         Err(_) => error!("Raw body is not valid UTF-8."),
@@ -370,8 +355,11 @@ impl AdminServiceImpl {
 
         info!("Log monitor started at http://{}", addr);
 
-        if let Err(e) = Server::bind(&addr).serve(app.into_make_service()).await {
-            info!("Log monitor server failed: {}", e);
+        if let Err(e) = axum::Server::bind(&addr)
+            .serve(app.into_make_service())
+            .await
+        {
+            error!("Log monitor server failed: {}", e);
         }
     }
 
