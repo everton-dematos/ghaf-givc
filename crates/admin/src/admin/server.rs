@@ -11,12 +11,12 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use axum::{body::Bytes, response::IntoResponse, routing::post, Router};
-use base64::engine::general_purpose;
-use base64::Engine;
-use hyper::StatusCode;
+use axum::response::IntoResponse;
+use axum::{body::Bytes, http::StatusCode, routing::post, Router};
+use base64::{engine::general_purpose, Engine as _};
+use hyper::Server;
 use serde::Deserialize;
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
 pub use pb::admin_service_server::AdminServiceServer;
 
@@ -56,9 +56,9 @@ pub struct AdminService {
 }
 
 //rustreceiver
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Deserialize)]
 struct LogStream {
-    stream: std::collections::HashMap<String, String>,
+    stream: HashMap<String, String>,
     values: Vec<(String, String)>,
 }
 
@@ -332,20 +332,36 @@ impl AdminServiceImpl {
 
     pub async fn log_monitor(self: Arc<Self>) {
         async fn handle_logs(body: Bytes) -> impl IntoResponse {
-            match serde_json::from_slice::<LogPayload>(&body) {
-                Ok(parsed) => {
-                    for stream in parsed.streams {
-                        for (ts, line) in stream.values {
-                            info!("[{}] {}", ts, line);
-                        }
+            fn try_parse_and_log(data: &[u8]) -> Result<(), serde_json::Error> {
+                let payload: LogPayload = serde_json::from_slice(data)?;
+                for stream in payload.streams {
+                    for (ts, line) in stream.values {
+                        info!("[{}] {}", ts, line);
                     }
                 }
-                Err(e) => {
-                    error!("Failed to parse JSON body: {}", e);
+                Ok(())
+            }
 
-                    // Dump base64-encoded payload to inspect later
-                    let encoded = general_purpose::STANDARD.encode(&body);
-                    error!("Raw body (base64): {}", encoded);
+            // First try parsing the body directly
+            if let Err(e) = try_parse_and_log(&body) {
+                error!("Direct JSON parse failed: {}", e);
+
+                // Try base64 decode if body is not valid UTF-8/JSON
+                match general_purpose::STANDARD.decode(&body) {
+                    Ok(decoded) => match try_parse_and_log(&decoded) {
+                        Ok(_) => info!("Successfully parsed base64-decoded JSON"),
+                        Err(e2) => {
+                            error!("Base64-decoded JSON parse failed: {}", e2);
+                            error!(
+                                "Raw base64 (trimmed): {}",
+                                &body[..std::cmp::min(body.len(), 200)].escape_ascii()
+                            );
+                        }
+                    },
+                    Err(e3) => {
+                        error!("Failed to base64 decode body: {}", e3);
+                        error!("Raw body is not base64 or valid UTF-8.");
+                    }
                 }
             }
 
@@ -357,10 +373,7 @@ impl AdminServiceImpl {
 
         info!("Log monitor started at http://{}", addr);
 
-        if let Err(e) = axum::Server::bind(&addr)
-            .serve(app.into_make_service())
-            .await
-        {
+        if let Err(e) = Server::bind(&addr).serve(app.into_make_service()).await {
             error!("Log monitor server failed: {}", e);
         }
     }
