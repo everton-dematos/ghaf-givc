@@ -72,8 +72,8 @@ pub struct LogStream {
 
 #[derive(prost::Message)]
 pub struct LogEntry {
-    #[prost(string, tag = "1")]
-    pub timestamp: String,
+    #[prost(bytes, tag = "1")]
+    pub timestamp: Vec<u8>,
     #[prost(string, tag = "2")]
     pub line: String,
 }
@@ -350,7 +350,8 @@ impl AdminServiceImpl {
                     Ok(decoded) => {
                         for stream in decoded.streams {
                             for entry in stream.entries {
-                                info!("[{}] {}", entry.timestamp, entry.line);
+                                let ts = String::from_utf8_lossy(&entry.timestamp);
+                                info!("[{}] {}", ts, entry.line);
                             }
                         }
                     }
