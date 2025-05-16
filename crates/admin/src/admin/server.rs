@@ -12,6 +12,8 @@ use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
 use axum::{body::Bytes, response::IntoResponse, routing::post, Router};
+use base64::engine::general_purpose;
+use base64::Engine;
 use hyper::StatusCode;
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -331,8 +333,8 @@ impl AdminServiceImpl {
     pub async fn log_monitor(self: Arc<Self>) {
         async fn handle_logs(body: Bytes) -> impl IntoResponse {
             match serde_json::from_slice::<LogPayload>(&body) {
-                Ok(payload) => {
-                    for stream in payload.streams {
+                Ok(parsed) => {
+                    for stream in parsed.streams {
                         for (ts, line) in stream.values {
                             info!("[{}] {}", ts, line);
                         }
@@ -340,10 +342,10 @@ impl AdminServiceImpl {
                 }
                 Err(e) => {
                     error!("Failed to parse JSON body: {}", e);
-                    match String::from_utf8(body.to_vec()) {
-                        Ok(s) => error!("Raw body: {}", s),
-                        Err(_) => error!("Raw body is not valid UTF-8."),
-                    }
+
+                    // Dump base64-encoded payload to inspect later
+                    let encoded = general_purpose::STANDARD.encode(&body);
+                    error!("Raw body (base64): {}", encoded);
                 }
             }
 

@@ -40,6 +40,7 @@ tracing-subscriber = { version = "0.3", features = [
 x509-parser = "0.17"
 axum = "0.6"
 hyper = { version = "0.14", features = ["full"] }
+base64 = "0.21"
 
 # GIVC subparts
 givc-common = { path = "../common" }
