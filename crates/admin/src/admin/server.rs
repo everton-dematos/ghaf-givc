@@ -57,25 +57,23 @@ pub struct AdminService {
 
 //rustreceiver
 #[derive(prost::Message)]
-struct PushRequest {
+pub struct PushRequest {
     #[prost(message, repeated, tag = "1")]
     pub streams: Vec<LogStream>,
 }
 
 #[derive(prost::Message)]
-struct LogStream {
-    #[prost(map = "string, string", tag = "1")]
-    pub labels: std::collections::HashMap<String, String>,
-
+pub struct LogStream {
+    #[prost(string, tag = "1")]
+    pub labels: String,
     #[prost(message, repeated, tag = "2")]
     pub entries: Vec<LogEntry>,
 }
 
 #[derive(prost::Message)]
-struct LogEntry {
+pub struct LogEntry {
     #[prost(string, tag = "1")]
     pub timestamp: String,
-
     #[prost(string, tag = "2")]
     pub line: String,
 }
