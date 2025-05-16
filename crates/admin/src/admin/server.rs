@@ -17,6 +17,7 @@ use axum::response::IntoResponse;
 use axum::{routing::post, Router};
 use hyper::Server;
 use serde::Deserialize;
+use serde_json::Value;
 use std::net::SocketAddr;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -339,9 +340,28 @@ impl AdminServiceImpl {
 
     pub async fn log_monitor(self: Arc<Self>) {
         async fn handle_logs(body: Bytes) -> impl IntoResponse {
-            let text = String::from_utf8_lossy(&body);
-            info!("Received raw payload: {}", text);
-            // Optionally attempt deserialization below
+            match serde_json::from_slice::<serde_json::Value>(&body) {
+                Ok(json) => {
+                    // Pretty-print the JSON
+                    match serde_json::to_string_pretty(&json) {
+                        Ok(pretty) => {
+                            info!("Received JSON:\n{}", pretty);
+                        }
+                        Err(e) => {
+                            error!("Failed to pretty-print JSON: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to parse JSON body: {}", e);
+                    // Optionally, also dump the raw string to help debug
+                    match String::from_utf8(body.to_vec()) {
+                        Ok(s) => error!("Raw body: {}", s),
+                        Err(_) => error!("Raw body is not valid UTF-8."),
+                    }
+                }
+            }
+
             StatusCode::OK
         }
 
