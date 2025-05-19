@@ -351,7 +351,8 @@ impl AdminServiceImpl {
                         for stream in decoded.streams {
                             for entry in stream.entries {
                                 let ts = String::from_utf8_lossy(&entry.timestamp);
-                                info!("[{}] {}", ts, entry.line);
+                                let line = String::from_utf8_lossy(entry.line.as_bytes());
+                                info!("LOG: [{}] {}", ts, line);
                             }
                         }
                     }
