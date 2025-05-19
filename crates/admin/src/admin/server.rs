@@ -17,6 +17,7 @@ use axum::{http::StatusCode, routing::post, Router};
 use prost::Message;
 use prost_types::Timestamp;
 use snap::raw::Decoder;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -352,6 +353,15 @@ impl AdminServiceImpl {
                 Ok(decompressed) => match PushRequest::decode(&*decompressed) {
                     Ok(decoded) => {
                         for stream in decoded.streams {
+                            let labels_map = AdminServiceImpl::parse_labels(&stream.labels);
+
+                            // Extract host from labels
+                            let host = labels_map
+                                .get("__journal__hostname")
+                                .or_else(|| labels_map.get("nodename"))
+                                .map(|s| s.as_str())
+                                .unwrap_or("unknown");
+
                             for entry in stream.entries {
                                 let ts = match Timestamp::decode(&*entry.timestamp) {
                                     Ok(t) => format!("{:?}", t),
@@ -359,7 +369,7 @@ impl AdminServiceImpl {
                                 };
 
                                 let line = entry.line.replace('\n', "␤").replace('\r', "␍");
-                                info!("LOG: [{}] {}", ts, line);
+                                info!("LOG: [{} | host: {}] {}", ts, host, line);
                             }
                         }
                     }
@@ -386,6 +396,21 @@ impl AdminServiceImpl {
         {
             error!("Log monitor server failed: {}", e);
         }
+    }
+
+    fn parse_labels(labels: &str) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+
+        let trimmed = labels.trim_matches(|c| c == '{' || c == '}');
+        for pair in trimmed.split(',') {
+            if let Some((k, v)) = pair.split_once('=') {
+                let key = k.trim().to_string();
+                let val = v.trim().trim_matches('"').to_string();
+                map.insert(key, val);
+            }
+        }
+
+        map
     }
 
     // Refactoring kludge
