@@ -41,8 +41,9 @@ x509-parser = "0.17"
 axum = "0.6"
 hyper = { version = "0.14", features = ["full"] }
 base64 = "0.21"
-prost-derive = "0.12"
+prost-derive = "0.13"
 snap = "1.1"
+prost-types = "0.13"
 
 # GIVC subparts
 givc-common = { path = "../common" }

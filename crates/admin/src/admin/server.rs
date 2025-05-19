@@ -15,6 +15,7 @@ use axum::body::Bytes;
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, routing::post, Router};
 use prost::Message;
+use prost_types::Timestamp;
 use snap::raw::Decoder;
 use std::net::SocketAddr;
 
@@ -343,6 +344,8 @@ impl AdminServiceImpl {
 
     pub async fn log_monitor(self: Arc<Self>) {
         async fn handle_logs(body: Bytes) -> impl IntoResponse {
+            info!("Received log POST: {} bytes", body.len());
+
             let mut decoder = Decoder::new();
 
             match decoder.decompress_vec(&body) {
@@ -350,8 +353,12 @@ impl AdminServiceImpl {
                     Ok(decoded) => {
                         for stream in decoded.streams {
                             for entry in stream.entries {
-                                let ts = String::from_utf8_lossy(&entry.timestamp);
-                                let line = String::from_utf8_lossy(entry.line.as_bytes());
+                                let ts = match Timestamp::decode(&*entry.timestamp) {
+                                    Ok(t) => format!("{:?}", t),
+                                    Err(_) => "<invalid timestamp>".to_string(),
+                                };
+
+                                let line = entry.line.replace('\n', "␤").replace('\r', "␍");
                                 info!("LOG: [{}] {}", ts, line);
                             }
                         }
