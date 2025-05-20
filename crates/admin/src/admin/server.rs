@@ -14,6 +14,7 @@ use tracing::{debug, error, info};
 use axum::body::Bytes;
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, routing::post, Router};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use prost::Message;
 use prost_types::Timestamp;
 use snap::raw::Decoder;
@@ -355,8 +356,8 @@ impl AdminServiceImpl {
                         for stream in decoded.streams {
                             let labels_map = AdminServiceImpl::parse_labels(&stream.labels);
 
-                            // Extract host from labels
-                            let host = labels_map
+                            // Extract source VM from labels
+                            let source_vm = labels_map
                                 .get("__journal__hostname")
                                 .or_else(|| labels_map.get("nodename"))
                                 .map(|s| s.as_str())
@@ -364,12 +365,24 @@ impl AdminServiceImpl {
 
                             for entry in stream.entries {
                                 let ts = match Timestamp::decode(&*entry.timestamp) {
-                                    Ok(t) => format!("{:?}", t),
+                                    Ok(t) => {
+                                        let naive = NaiveDateTime::from_timestamp_opt(
+                                            t.seconds,
+                                            t.nanos as u32,
+                                        );
+                                        if let Some(ndt) = naive {
+                                            let datetime: DateTime<Utc> =
+                                                DateTime::from_utc(ndt, Utc);
+                                            datetime.format("%b %d %H:%M:%S").to_string()
+                                        } else {
+                                            "<invalid timestamp>".to_string()
+                                        }
+                                    }
                                     Err(_) => "<invalid timestamp>".to_string(),
                                 };
 
                                 let line = entry.line.replace('\n', "␤").replace('\r', "␍");
-                                info!("LOG: [{} | host: {}] {}", ts, host, line);
+                                info!("[{} | source: {}] {}", ts, source_vm, line);
                             }
                         }
                     }
