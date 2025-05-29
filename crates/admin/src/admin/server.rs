@@ -19,10 +19,12 @@ use tracing::{debug, error, info};
 
 use axum::body::Bytes;
 use axum::response::IntoResponse;
-use axum::{http::StatusCode, routing::post, Router};
+use axum::{Router, http::StatusCode, routing::post};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use prost::Message;
 use prost_types::Timestamp;
+use serde_json::json;
+use sigmars::{SigmaCollection, event::Event as SigmaEvent, event::LogSource};
 use snap::raw::Decoder;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -377,7 +379,7 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(self: Arc<Self>) {
-        async fn handle_logs(body: Bytes) -> impl IntoResponse {
+        async fn handle_logs(body: Bytes, sigma_rules: Arc<SigmaCollection>) -> impl IntoResponse {
             info!("Received log POST: {} bytes", body.len());
 
             let mut decoder = Decoder::new();
@@ -414,7 +416,24 @@ impl AdminServiceImpl {
                                 };
 
                                 let line = entry.line.replace('\n', "␤").replace('\r', "␍");
-                                info!("[{} | source: {}] {}", ts, source_vm, line);
+                                // info!("[{} | source: {}] {}", ts, source_vm, line);
+
+                                let json_log = json!({
+                                    "timestamp": Utc::now().to_rfc3339(),
+                                    "host": { "name": source_vm },
+                                    "log": { "message": line }
+                                });
+
+                                info!("{}", json_log.to_string());
+
+                                let mut event: SigmaEvent = json_log.into();
+                                event.logsource = LogSource::default().product("linux");
+
+                                // Match against all rules without filtering by logsource
+                                let matches = sigma_rules.get_detection_matches_unfiltered(&event);
+                                for id in matches {
+                                    info!("MATCHED RULE: {}", id);
+                                }
                             }
                         }
                     }
@@ -430,7 +449,33 @@ impl AdminServiceImpl {
             StatusCode::OK
         }
 
-        let app = Router::new().route("/logs", post(handle_logs));
+        fn load_sigma_rules() -> anyhow::Result<SigmaCollection> {
+            let rule_dir = std::env::var("SIGMA_RULE_PATH")
+                .unwrap_or_else(|_| "/usr/share/givc/sigma_all_rules".to_string());
+
+            let collection = SigmaCollection::new_from_dir(&rule_dir)
+                .map_err(|e| anyhow::anyhow!("Failed to load rules: {}", e))?;
+
+            println!("Loaded {} Sigma rules", collection.len());
+            Ok(collection)
+        }
+
+        let sigma_rules = match load_sigma_rules() {
+            Ok(rules) => Arc::new(rules),
+            Err(e) => {
+                error!("Failed to load Sigma rules: {:?}", e);
+                return;
+            }
+        };
+
+        // let app = Router::new().route("/logs", post(handle_logs));
+        let app = Router::new().route(
+            "/logs",
+            post({
+                let sigma_rules = sigma_rules.clone();
+                move |body| handle_logs(body, sigma_rules.clone())
+            }),
+        );
         let addr = SocketAddr::from(([127, 0, 0, 1], 8484));
 
         info!("Log monitor started at http://{}", addr);

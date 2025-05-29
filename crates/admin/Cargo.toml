@@ -50,6 +50,8 @@ prost-derive = "0.13"
 snap = "1.1"
 prost-types = "0.13"
 chrono = { version = "0.4", features = ["serde"] }
+sigma-rust = "=0.6.0"
+sigmars = "0.2"
 
 # GIVC subparts
 givc-common = { path = "../common" }

@@ -65,6 +65,10 @@ let
         mv $out/bin/givc-agent $agent/bin/givc-agent
         mv $out/bin/update-server $update_server/bin/ota-update-server
         mv $out/bin/ota-update $ota/bin/ota-update
+
+        # Install Sigma rules directory
+        mkdir -p $out/share/givc
+        cp -r crates/admin/src/admin/sigma_all_rules $out/share/givc/
       '';
     }
   );
