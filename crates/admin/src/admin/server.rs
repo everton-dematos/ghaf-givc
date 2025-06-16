@@ -380,7 +380,7 @@ impl AdminServiceImpl {
 
     pub async fn log_monitor(self: Arc<Self>) {
         async fn handle_logs(body: Bytes, sigma_rules: Arc<SigmaCollection>) -> impl IntoResponse {
-            info!("Received log POST: {} bytes", body.len());
+            // info!("Received log POST: {} bytes", body.len());
 
             let mut decoder = Decoder::new();
 
@@ -424,16 +424,16 @@ impl AdminServiceImpl {
                                     "log": { "message": line }
                                 });
 
-                                info!("{}", json_log.to_string());
+                                // info!("{}", json_log.to_string());
 
                                 let mut event: SigmaEvent = json_log.into();
                                 event.logsource = LogSource::default().product("linux");
 
                                 // Match against all rules without filtering by logsource
                                 let matches = sigma_rules.get_detection_matches_unfiltered(&event);
-                                for id in matches {
-                                    info!("MATCHED RULE: {}", id);
-                                }
+                                // for id in matches {
+                                //     info!("MATCHED RULE: {}", id);
+                                // }
                             }
                         }
                     }
@@ -450,13 +450,14 @@ impl AdminServiceImpl {
         }
 
         fn load_sigma_rules() -> anyhow::Result<SigmaCollection> {
-            let rule_dir = std::env::var("SIGMA_RULE_PATH")
-                .unwrap_or_else(|_| "/usr/share/givc/sigma_all_rules".to_string());
+            let rule_dir = std::env::var("SIGMA_RULE_PATH").expect("SIGMA_RULE_PATH not set");
+
+            info!("Using Sigma rule path: {}", rule_dir);
 
             let collection = SigmaCollection::new_from_dir(&rule_dir)
                 .map_err(|e| anyhow::anyhow!("Failed to load rules: {}", e))?;
 
-            println!("Loaded {} Sigma rules", collection.len());
+            info!("Loaded {} Sigma rules", collection.len());
             Ok(collection)
         }
 

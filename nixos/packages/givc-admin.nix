@@ -9,7 +9,10 @@ let
   craneLib = crane.mkLib pkgs;
 
   protoFilter = path: _type: null != builtins.match ".*proto$" path;
-  protoOrCargo = path: type: (protoFilter path type) || (craneLib.filterCargoSources path type);
+  sigmaFilter = path: _type: builtins.match ".*/sigma_all_rules/.*\\.ya?ml$" path != null;
+
+  protoOrCargoOrSigma =
+    path: type: protoFilter path type || craneLib.filterCargoSources path type || sigmaFilter path type;
   # Common arguments can be set here to avoid repeating them later
   # Note: changes here will rebuild all dependency crates
   commonArgs = {
@@ -17,7 +20,7 @@ let
     version = "0.0.1";
     src = lib.cleanSourceWith {
       src = craneLib.path src;
-      filter = protoOrCargo;
+      filter = protoOrCargoOrSigma;
     };
 
     strictDeps = true;

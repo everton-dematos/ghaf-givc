@@ -102,6 +102,7 @@ in
             "SUBTYPE" = "5";
             "TLS" = "${trivial.boolToString cfg.tls.enable}";
             "SERVICES" = "${concatStringsSep " " cfg.services}";
+            "SIGMA_RULE_PATH" = "${givc-admin}/share/givc/sigma_all_rules";
           }
           // attrsets.optionalAttrs cfg.tls.enable {
             "CA_CERT" = "${cfg.tls.caCertPath}";
