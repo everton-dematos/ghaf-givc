@@ -9,7 +9,7 @@ let
   craneLib = crane.mkLib pkgs;
 
   protoFilter = path: _type: null != builtins.match ".*proto$" path;
-  sigmaFilter = path: _type: builtins.match ".*/sigma_all_rules/.*\\.ya?ml$" path != null;
+  sigmaFilter = path: _type: builtins.match ".*/sigma_rules/.*\\.ya?ml$" path != null;
 
   protoOrCargoOrSigma =
     path: type: protoFilter path type || craneLib.filterCargoSources path type || sigmaFilter path type;
@@ -71,7 +71,7 @@ let
 
         # Install Sigma rules directory
         mkdir -p $out/share/givc
-        cp -r crates/admin/src/admin/sigma_all_rules $out/share/givc/
+        cp -r crates/admin/src/admin/sigma_rules $out/share/givc/
       '';
     }
   );
