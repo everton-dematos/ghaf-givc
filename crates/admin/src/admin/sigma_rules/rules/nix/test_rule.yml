@@ -1,0 +1,10 @@
+# title: 'Test Started Match'
+# id: test-ssh-match-1234
+# logsource:
+#   product: linux
+#   service: systemd-journal
+# detection:
+#   selection:
+#     message|contains: 'Started'
+#   condition: selection
+# level: high

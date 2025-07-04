@@ -1,0 +1,25 @@
+# title: Suspicious nix-store Execution from Non-Admin VM
+# id: f6568111-dbd6-4593-8d16-3de0f2da139e
+# description: Detects any nix-store command usage, possibly unauthorized, from VMs other than the designated admin VM
+# status: experimental
+# author: Everton de Matos
+# date: 2025/06/20
+# logsource:
+#   product: linux
+#   service: systemd-journal
+# detection:
+#   selection:
+#     MESSAGE|contains: 'nix-store'
+#   filter_admin:
+#     _HOSTNAME: 'admin-vm'
+#   condition: selection and not filter_admin
+# fields:
+#   - _HOSTNAME
+#   - MESSAGE
+#   - SYSLOG_IDENTIFIER
+# level: critical
+# tags:
+#   - ghaf.framework
+#   - nixos
+#   - system-integrity
+#   - attack.execution

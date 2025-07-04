@@ -1,0 +1,14 @@
+title: 'Critical SSH Service Stopped'
+id: 79d8739a-9250-4181-8ad4-a595afcae3bf
+description: 'Detects when the SSH service is being stopped.'
+status: experimental
+author: 'Everton de Matos'
+date: 2025/06/23
+logsource:
+  product: linux
+  service: systemd-journal
+detection:
+  selection:
+    message|re: '(?i)^Stopping SSH'
+  condition: selection
+level: high

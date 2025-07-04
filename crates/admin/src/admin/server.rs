@@ -379,6 +379,51 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(self: Arc<Self>) {
+        // Match rule ID to a response handler
+        fn handle_response_for_match(rule_id: &str, level: &str, source_vm: &str, message: &str) {
+            let mut rule_responses: HashMap<&str, fn(&str, &str)> = HashMap::new();
+            rule_responses.insert("79d8739a-9250-4181-8ad4-a595afcae3bf", respond_ssh_stop);
+
+            // Call handler for matched rule
+            if let Some(handler) = rule_responses.get(rule_id) {
+                handler(source_vm, message);
+                return;
+            }
+
+            match level {
+                "critical" => {
+                    respond_critical_level(source_vm, message);
+                }
+                _ => {}
+            }
+        }
+
+        fn respond_ssh_stop(source_vm: &str, message: &str) {
+            if source_vm == "ghaf-host" || source_vm == "admin-vm" {
+                info!(
+                    "[RESPONSE] SSH stop detected on critical VM ({}), no reboot action taken.",
+                    source_vm
+                );
+                return;
+            }
+
+            info!(
+                "[RESPONSE] SSH stop detected on {}, triggering reboot. MSG: {}",
+                source_vm, message
+            );
+
+            // TODO: Add logic here
+        }
+
+        fn respond_critical_level(source_vm: &str, message: &str) {
+            info!(
+                "[RESPONSE] High severity log received from {} | MSG: {}",
+                source_vm, message
+            );
+            // TODO: Add logic here
+        }
+
+        // Process incoming log POST request
         async fn handle_logs(body: Bytes, sigma_rules: Arc<SigmaCollection>) -> impl IntoResponse {
             // info!("Received log POST: {} bytes", body.len());
 
@@ -415,25 +460,55 @@ impl AdminServiceImpl {
                                     Err(_) => "<invalid timestamp>".to_string(),
                                 };
 
+                                // Normalize line format
                                 let line = entry.line.replace('\n', "␤").replace('\r', "␍");
                                 // info!("[{} | source: {}] {}", ts, source_vm, line);
 
+                                // Build structured log object
                                 let json_log = json!({
                                     "timestamp": Utc::now().to_rfc3339(),
-                                    "host": { "name": source_vm },
-                                    "log": { "message": line }
+                                    "hostname": source_vm,
+                                    "message": line
                                 });
+
+                                // Add metadata to event
+                                let mut metadata = HashMap::new();
+                                metadata.insert("source_vm".to_string(), json!(source_vm));
+                                metadata.insert("raw_line".to_string(), json!(line));
 
                                 // info!("{}", json_log.to_string());
 
-                                let mut event: SigmaEvent = json_log.into();
-                                event.logsource = LogSource::default().product("linux");
+                                // Create Sigma event
+                                let mut event: SigmaEvent = SigmaEvent::new(json_log)
+                                    .logsource(
+                                        LogSource::default()
+                                            .product("linux")
+                                            .service("systemd-journal"),
+                                    )
+                                    .metadata(metadata);
 
-                                // Match against all rules without filtering by logsource
+                                // info!("EVENT MESSAGE FIELD: {:?}", event.data.get("message"));
+                                // info!("DEBUG EVENT LOGSOURCE: {:?}", event.logsource);
+                                // info!("DEBUG EVENT METADATA: {:?}", event.metadata);
+
+                                // Run detection logic
                                 let matches = sigma_rules.get_detection_matches_unfiltered(&event);
-                                // for id in matches {
-                                //     info!("MATCHED RULE: {}", id);
-                                // }
+
+                                // Process all matched rules - it can be more than one
+                                for id in matches {
+                                    let rule = sigma_rules
+                                        .get(&id)
+                                        .expect("Matched rule ID not found in collection");
+
+                                    let level = rule.level.as_deref().unwrap_or("unknown");
+                                    info!(
+                                        "MATCHED RULE: {} | LEVEL: {} | SOURCE VM: {} | LOG: {}",
+                                        id, level, source_vm, line
+                                    );
+
+                                    // Trigger appropriate response
+                                    handle_response_for_match(&id, level, source_vm, &line);
+                                }
                             }
                         }
                     }
@@ -449,6 +524,7 @@ impl AdminServiceImpl {
             StatusCode::OK
         }
 
+        // Load Sigma rules from directory
         fn load_sigma_rules() -> anyhow::Result<SigmaCollection> {
             let rule_dir = std::env::var("SIGMA_RULE_PATH").expect("SIGMA_RULE_PATH not set");
 
@@ -461,6 +537,7 @@ impl AdminServiceImpl {
             Ok(collection)
         }
 
+        // Initialize rules
         let sigma_rules = match load_sigma_rules() {
             Ok(rules) => Arc::new(rules),
             Err(e) => {
@@ -469,7 +546,7 @@ impl AdminServiceImpl {
             }
         };
 
-        // let app = Router::new().route("/logs", post(handle_logs));
+        // Define HTTP POST route for receiving logs
         let app = Router::new().route(
             "/logs",
             post({
@@ -477,10 +554,12 @@ impl AdminServiceImpl {
                 move |body| handle_logs(body, sigma_rules.clone())
             }),
         );
+
         let addr = SocketAddr::from(([127, 0, 0, 1], 8484));
 
         info!("Log monitor started at http://{}", addr);
 
+        // Start Axum HTTP server
         if let Err(e) = axum::Server::bind(&addr)
             .serve(app.into_make_service())
             .await
