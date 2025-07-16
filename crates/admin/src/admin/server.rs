@@ -17,16 +17,10 @@ use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
-use axum::body::Bytes;
-use axum::response::IntoResponse;
-use axum::{Router, http::StatusCode, routing::post};
-use chrono::{DateTime, NaiveDateTime, Utc};
-use prost::Message;
+use crate::admin::logs::handle_logs;
+use crate::admin::rules::load_sigma_rules;
+use axum::{Router, routing::post};
 use prost_types::Timestamp;
-use serde_json::json;
-use sigmars::{SigmaCollection, event::Event as SigmaEvent, event::LogSource};
-use snap::raw::Decoder;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 
 pub use pb::admin_service_server::AdminServiceServer;
@@ -65,30 +59,6 @@ pub struct AdminServiceImpl {
 pub struct AdminService {
     inner: Arc<AdminServiceImpl>,
 }
-
-//rustreceiver
-#[derive(prost::Message)]
-pub struct PushRequest {
-    #[prost(message, repeated, tag = "1")]
-    pub streams: Vec<LogStream>,
-}
-
-#[derive(prost::Message)]
-pub struct LogStream {
-    #[prost(string, tag = "1")]
-    pub labels: String,
-    #[prost(message, repeated, tag = "2")]
-    pub entries: Vec<LogEntry>,
-}
-
-#[derive(prost::Message)]
-pub struct LogEntry {
-    #[prost(bytes, tag = "1")]
-    pub timestamp: Vec<u8>,
-    #[prost(string, tag = "2")]
-    pub line: String,
-}
-//rustreceiver
 
 struct Validator();
 
@@ -379,175 +349,18 @@ impl AdminServiceImpl {
     }
 
     pub async fn log_monitor(self: Arc<Self>) {
-        // Match rule ID to a response handler
-        fn handle_response_for_match(rule_id: &str, level: &str, source_vm: &str, message: &str) {
-            let mut rule_responses: HashMap<&str, fn(&str, &str)> = HashMap::new();
-            rule_responses.insert("79d8739a-9250-4181-8ad4-a595afcae3bf", respond_ssh_stop);
-
-            // Call handler for matched rule
-            if let Some(handler) = rule_responses.get(rule_id) {
-                handler(source_vm, message);
-                return;
-            }
-
-            match level {
-                "critical" => {
-                    respond_critical_level(source_vm, message);
-                }
-                _ => {}
-            }
-        }
-
-        fn respond_ssh_stop(source_vm: &str, message: &str) {
-            if source_vm == "ghaf-host" || source_vm == "admin-vm" {
-                info!(
-                    "[RESPONSE] SSH stop detected on critical VM ({}), no reboot action taken.",
-                    source_vm
-                );
-                return;
-            }
-
-            info!(
-                "[RESPONSE] SSH stop detected on {}, triggering reboot. MSG: {}",
-                source_vm, message
-            );
-
-            // TODO: Add logic here
-        }
-
-        fn respond_critical_level(source_vm: &str, message: &str) {
-            info!(
-                "[RESPONSE] High severity log received from {} | MSG: {}",
-                source_vm, message
-            );
-            // TODO: Add logic here
-        }
-
-        // Process incoming log POST request
-        async fn handle_logs(body: Bytes, sigma_rules: Arc<SigmaCollection>) -> impl IntoResponse {
-            // info!("Received log POST: {} bytes", body.len());
-
-            let mut decoder = Decoder::new();
-
-            match decoder.decompress_vec(&body) {
-                Ok(decompressed) => match PushRequest::decode(&*decompressed) {
-                    Ok(decoded) => {
-                        for stream in decoded.streams {
-                            let labels_map = AdminServiceImpl::parse_labels(&stream.labels);
-
-                            // Extract source VM from labels
-                            let source_vm = labels_map
-                                .get("__journal__hostname")
-                                .or_else(|| labels_map.get("nodename"))
-                                .map(|s| s.as_str())
-                                .unwrap_or("unknown");
-
-                            for entry in stream.entries {
-                                let ts = match Timestamp::decode(&*entry.timestamp) {
-                                    Ok(t) => {
-                                        let naive = NaiveDateTime::from_timestamp_opt(
-                                            t.seconds,
-                                            t.nanos as u32,
-                                        );
-                                        if let Some(ndt) = naive {
-                                            let datetime: DateTime<Utc> =
-                                                DateTime::from_utc(ndt, Utc);
-                                            datetime.format("%b %d %H:%M:%S").to_string()
-                                        } else {
-                                            "<invalid timestamp>".to_string()
-                                        }
-                                    }
-                                    Err(_) => "<invalid timestamp>".to_string(),
-                                };
-
-                                // Normalize line format
-                                let line = entry.line.replace('\n', "␤").replace('\r', "␍");
-                                // info!("[{} | source: {}] {}", ts, source_vm, line);
-
-                                // Build structured log object
-                                let json_log = json!({
-                                    "timestamp": Utc::now().to_rfc3339(),
-                                    "hostname": source_vm,
-                                    "message": line
-                                });
-
-                                // Add metadata to event
-                                let mut metadata = HashMap::new();
-                                metadata.insert("source_vm".to_string(), json!(source_vm));
-                                metadata.insert("raw_line".to_string(), json!(line));
-
-                                // info!("{}", json_log.to_string());
-
-                                // Create Sigma event
-                                let mut event: SigmaEvent = SigmaEvent::new(json_log)
-                                    .logsource(
-                                        LogSource::default()
-                                            .product("linux")
-                                            .service("systemd-journal"),
-                                    )
-                                    .metadata(metadata);
-
-                                // info!("EVENT MESSAGE FIELD: {:?}", event.data.get("message"));
-                                // info!("DEBUG EVENT LOGSOURCE: {:?}", event.logsource);
-                                // info!("DEBUG EVENT METADATA: {:?}", event.metadata);
-
-                                // Run detection logic
-                                let matches = sigma_rules.get_detection_matches_unfiltered(&event);
-
-                                // Process all matched rules - it can be more than one
-                                for id in matches {
-                                    let rule = sigma_rules
-                                        .get(&id)
-                                        .expect("Matched rule ID not found in collection");
-
-                                    let level = rule.level.as_deref().unwrap_or("unknown");
-                                    info!(
-                                        "MATCHED RULE: {} | LEVEL: {} | SOURCE VM: {} | LOG: {}",
-                                        id, level, source_vm, line
-                                    );
-
-                                    // Trigger appropriate response
-                                    handle_response_for_match(&id, level, source_vm, &line);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to decode protobuf payload: {}", e);
-                    }
-                },
-                Err(e) => {
-                    error!("Failed to decompress snappy body: {}", e);
-                }
-            }
-
-            StatusCode::OK
-        }
-
-        // Load Sigma rules from directory
-        fn load_sigma_rules() -> anyhow::Result<SigmaCollection> {
-            let rule_dir = std::env::var("SIGMA_RULE_PATH").expect("SIGMA_RULE_PATH not set");
-
-            info!("Using Sigma rule path: {}", rule_dir);
-
-            let collection = SigmaCollection::new_from_dir(&rule_dir)
-                .map_err(|e| anyhow::anyhow!("Failed to load rules: {}", e))?;
-
-            info!("Loaded {} Sigma rules", collection.len());
-            Ok(collection)
-        }
-
         // Initialize rules
         let sigma_rules = match load_sigma_rules() {
             Ok(rules) => Arc::new(rules),
             Err(e) => {
-                error!("Failed to load Sigma rules: {:?}", e);
+                tracing::error!("Failed to load Sigma rules: {:?}", e);
                 return;
             }
         };
 
         // Define HTTP POST route for receiving logs
         let app = Router::new().route(
+            // Define here a logic to determine if there is no log coming at all
             "/logs",
             post({
                 let sigma_rules = sigma_rules.clone();
@@ -556,7 +369,6 @@ impl AdminServiceImpl {
         );
 
         let addr = SocketAddr::from(([127, 0, 0, 1], 8484));
-
         info!("Log monitor started at http://{}", addr);
 
         // Start Axum HTTP server
@@ -564,23 +376,8 @@ impl AdminServiceImpl {
             .serve(app.into_make_service())
             .await
         {
-            error!("Log monitor server failed: {}", e);
+            tracing::error!("Log monitor server failed: {}", e);
         }
-    }
-
-    fn parse_labels(labels: &str) -> HashMap<String, String> {
-        let mut map = HashMap::new();
-
-        let trimmed = labels.trim_matches(|c| c == '{' || c == '}');
-        for pair in trimmed.split(',') {
-            if let Some((k, v)) = pair.split_once('=') {
-                let key = k.trim().to_string();
-                let val = v.trim().trim_matches('"').to_string();
-                map.insert(key, val);
-            }
-        }
-
-        map
     }
 
     // Refactoring kludge

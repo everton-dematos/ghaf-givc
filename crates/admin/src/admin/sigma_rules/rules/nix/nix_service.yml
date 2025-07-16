@@ -4,6 +4,11 @@ description: 'Detects when the SSH service is being stopped.'
 status: experimental
 author: 'Everton de Matos'
 date: 2025/06/23
+tags:
+    - attack.impact
+    - attack.t1489
+    - attack.defense_evasion
+    - attack.t1562.001
 logsource:
   product: linux
   service: systemd-journal
